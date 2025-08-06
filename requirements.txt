@@ -1,6 +1,5 @@
 streamlit
 pandas
-io
 zipfile
 datetime
 logging
