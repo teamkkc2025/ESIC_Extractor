@@ -1,0 +1,2 @@
+[server]
+maxUploadSize = 20000  # Set file size limit to 20 GB (20000 MB)
