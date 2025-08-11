@@ -35,6 +35,42 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ============================================================================
+# UTILITY FUNCTIONS FOR NUMERIC CONVERSION
+# ============================================================================
+
+def safe_numeric_convert(value, is_integer=False):
+    """Safely convert string to number, removing commas and handling decimals"""
+    try:
+        if not value or value == '-' or str(value).lower() in ['not found', 'n/a', 'error', '']:
+            return 0 if is_integer else 0.0
+        
+        # Remove commas and clean the string
+        clean_value = str(value).replace(',', '').strip()
+        
+        if is_integer:
+            return int(float(clean_value))
+        else:
+            return float(clean_value)
+    except (ValueError, TypeError):
+        return 0 if is_integer else 0.0
+
+def safe_numeric_convert_challan(value, is_integer=False):
+    """Safely convert string to number for challan data"""
+    try:
+        if not value or str(value).lower() in ['not found', 'n/a', 'error', '']:
+            return 0 if is_integer else 0.0
+        
+        # Remove currency symbols, commas, and clean the string
+        clean_value = str(value).replace('₹', '').replace(',', '').strip()
+        
+        if is_integer:
+            return int(float(clean_value))
+        else:
+            return float(clean_value)
+    except (ValueError, TypeError):
+        return value  # Return original if conversion fails
+
+# ============================================================================
 # ESIC CONTRIBUTION HISTORY EXTRACTOR
 # ============================================================================
 
@@ -248,20 +284,20 @@ def parse_employee_row_improved(row_text, summary_info):
             contribution += '.00'
         
         employee_record = {
-            'SNo.': sno,
+            'SNo.': safe_numeric_convert(sno, is_integer=True),
             'Is Disable': is_disable,
-            'IP Number': ip_number,
+            'IP Number': ip_number,  # Keep as string for IP numbers
             'IP Name': ip_name,
-            'No. Of Days': days,
-            'Total Wages': wages,
-            'IP Contribution': contribution,
+            'No. Of Days': safe_numeric_convert(days, is_integer=True),
+            'Total Wages': safe_numeric_convert(wages),
+            'IP Contribution': safe_numeric_convert(contribution),
             'Reason': reason,
-            # Add summary columns
-            'Total IP Contribution': summary_info.get('total_ip_contribution', ''),
-            'Total Employer Contribution': summary_info.get('total_employer_contribution', ''),
-            'Total Contribution': summary_info.get('total_contribution', ''),
-            'Total Government Contribution': summary_info.get('total_government_contribution', ''),
-            'Total Monthly Wages': summary_info.get('total_monthly_wages', '')
+            # Add summary columns - convert to numbers
+            'Total IP Contribution': safe_numeric_convert(summary_info.get('total_ip_contribution', '')),
+            'Total Employer Contribution': safe_numeric_convert(summary_info.get('total_employer_contribution', '')),
+            'Total Contribution': safe_numeric_convert(summary_info.get('total_contribution', '')),
+            'Total Government Contribution': safe_numeric_convert(summary_info.get('total_government_contribution', '')),
+            'Total Monthly Wages': safe_numeric_convert(summary_info.get('total_monthly_wages', ''))
         }
         
         return employee_record
@@ -319,11 +355,11 @@ def format_excel_sheet(worksheet, data, start_row=1):
         current_row += 1
        
         summary_values = [
-            data['summary_info'].get('total_ip_contribution', ''),
-            data['summary_info'].get('total_employer_contribution', ''),
-            data['summary_info'].get('total_contribution', ''),
-            data['summary_info'].get('total_government_contribution', ''),
-            data['summary_info'].get('total_monthly_wages', '')
+            safe_numeric_convert(data['summary_info'].get('total_ip_contribution', '')),
+            safe_numeric_convert(data['summary_info'].get('total_employer_contribution', '')),
+            safe_numeric_convert(data['summary_info'].get('total_contribution', '')),
+            safe_numeric_convert(data['summary_info'].get('total_government_contribution', '')),
+            safe_numeric_convert(data['summary_info'].get('total_monthly_wages', ''))
         ]
        
         for col, value in enumerate(summary_values, 1):
@@ -800,7 +836,7 @@ def create_challan_excel_report(results):
                 'Challan Number': extracted.get('challan_number', 'Not Found'),
                 'Challan Created Date': extracted.get('challan_created_date', 'Not Found'),
                 'Challan Submitted Date': extracted.get('challan_submitted_date', 'Not Found'),
-                'Amount Paid': extracted.get('amount_paid', 'Not Found'),
+                'Amount Paid': safe_numeric_convert_challan(extracted.get('amount_paid', 'Not Found')),
                 'Transaction Number': extracted.get('transaction_number', 'Not Found'),
                 'Tables Found': len(result.get('tables', [])),
                 'Error': ''
@@ -933,69 +969,124 @@ def main():
         )
         
         if uploaded_files:
-            st.write(f"📁 Selected {len(uploaded_files)} file(s)")
+            st.info(f"📁 Selected {len(uploaded_files)} file(s) for processing")
             
-            if st.button("🔄 Process ECR PDFs", key="process_contribution"):
-                all_data = []
-                progress_bar = st.progress(0)
-                status_text = st.empty()
+            if st.button("🔄 Process ECR PDFs", type="primary", key="process_contribution"):
+                # Create containers for different sections
+                progress_container = st.container()
+                results_container = st.container()
+                download_container = st.container()
                 
-                for i, uploaded_file in enumerate(uploaded_files):
-                    status_text.text(f"Processing {uploaded_file.name}...")
-                    progress_bar.progress((i + 1) / len(uploaded_files))
+                with progress_container:
+                    st.subheader("🔄 Processing Status")
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
                     
-                    try:
-                        extracted_data = extract_esic_data(uploaded_file)
-                        if extracted_data:
-                            all_data.append({
-                                'filename': uploaded_file.name,
-                                'data': extracted_data
-                            })
-                            st.success(f"✅ Successfully processed {uploaded_file.name}")
+                    # Processing results tracking
+                    all_data = []
+                    successful_files = []
+                    failed_files = []
+                    
+                    # Process files
+                    for i, uploaded_file in enumerate(uploaded_files):
+                        status_text.text(f"Processing: {uploaded_file.name}")
+                        progress_bar.progress((i + 1) / len(uploaded_files))
+                        
+                        try:
+                            extracted_data = extract_esic_data(uploaded_file)
+                            if extracted_data:
+                                all_data.append({
+                                    'filename': uploaded_file.name,
+                                    'data': extracted_data
+                                })
+                                successful_files.append(uploaded_file.name)
+                            else:
+                                failed_files.append(uploaded_file.name)
+                        
+                        except Exception as e:
+                            failed_files.append(f"{uploaded_file.name} (Error: {str(e)})")
+                    
+                    status_text.empty()
+                    progress_bar.empty()
+                
+                # Show results summary
+                with results_container:
+                    if all_data or failed_files:
+                        st.subheader("📊 Processing Summary")
+                        
+                        # Summary metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        total_employees = sum(len(data['data'].get('employee_data', [])) for data in all_data)
+                        total_files = len(uploaded_files)
+                        successful_count = len(successful_files)
+                        failed_count = len(failed_files)
+                        
+                        with col1:
+                            st.metric("📄 Total Files", total_files)
+                        with col2:
+                            st.metric("✅ Successful", successful_count, delta=f"{(successful_count/total_files*100):.1f}%")
+                        with col3:
+                            st.metric("❌ Failed", failed_count, delta=f"{(failed_count/total_files*100):.1f}%" if failed_count > 0 else "0%")
+                        with col4:
+                            st.metric("👥 Total Employees", total_employees)
+                        
+                        # Success/failure indicator
+                        if successful_count == total_files:
+                            st.success(f"🎉 All {total_files} files processed successfully!")
+                        elif successful_count > 0:
+                            st.warning(f"⚠️ {successful_count} files processed successfully, {failed_count} failed")
                         else:
-                            st.error(f"❌ Failed to extract data from {uploaded_file.name}")
-                    
-                    except Exception as e:
-                        st.error(f"❌ Error processing {uploaded_file.name}: {str(e)}")
+                            st.error("❌ No files were processed successfully")
                 
-                status_text.text("Processing completed!")
-                
-                if all_data:
-                    st.success(f"🎉 Successfully processed {len(all_data)} files!")
-                    
-                    # Display summary statistics
-                    col1, col2, col3 = st.columns(3)
-                    
-                    total_employees = sum(len(data['data'].get('employee_data', [])) for data in all_data)
-                    total_files = len(all_data)
-                    
-                    with col1:
-                        st.metric("📄 Files Processed", total_files)
-                    with col2:
-                        st.metric("👥 Total Employees", total_employees)
-                    with col3:
-                        avg_per_file = total_employees / total_files if total_files > 0 else 0
-                        st.metric("📊 Avg Employees/File", f"{avg_per_file:.1f}")
-                    
-                    # Preview first file data
-                    if all_data[0]['data'].get('employee_data'):
-                        st.subheader("📋 Data Preview")
-                        preview_df = pd.DataFrame(all_data[0]['data']['employee_data'][:5])  # First 5 rows
-                        st.dataframe(preview_df, use_container_width=True)
-                    
-                    # Generate Excel file
-                    try:
-                        excel_file = create_combined_excel(all_data)
+                # Download section and preview
+                with download_container:
+                    if all_data:
+                        st.subheader("📥 Download & Preview")
                         
-                        st.download_button(
-                            label="📥 Download Excel Report",
-                            data=excel_file,
-                            file_name=f"ESIC_ECR{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
+                        col1, col2 = st.columns([2, 1])
                         
-                    except Exception as e:
-                        st.error(f"❌ Error creating Excel file: {str(e)}")
+                        with col1:
+                            # Generate Excel file
+                            try:
+                                excel_file = create_combined_excel(all_data)
+                                
+                                st.download_button(
+                                    label="📥 Download Excel Report",
+                                    data=excel_file,
+                                    file_name=f"ESIC_ECR_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    type="primary"
+                                )
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error creating Excel file: {str(e)}")
+                        
+                        with col2:
+                            st.info(f"💡 Excel contains:\n• Combined data sheet\n• Individual file sheets\n• {total_employees} employee records")
+                        
+                        # Data preview
+                        if all_data[0]['data'].get('employee_data'):
+                            st.subheader("📋 Data Preview (First 10 rows)")
+                            preview_df = pd.DataFrame(all_data[0]['data']['employee_data'][:10])
+                            # Show only key columns for preview
+                            key_columns = ['SNo.', 'IP Number', 'IP Name', 'No. Of Days', 'Total Wages', 'IP Contribution']
+                            available_columns = [col for col in key_columns if col in preview_df.columns]
+                            if available_columns:
+                                st.dataframe(preview_df[available_columns], use_container_width=True)
+                    
+                    # Show processing details in collapsible section
+                    if successful_files or failed_files:
+                        with st.expander("📝 View Processing Details", expanded=False):
+                            if successful_files:
+                                st.success("✅ Successfully Processed Files:")
+                                for filename in successful_files:
+                                    st.write(f"• {filename}")
+                            
+                            if failed_files:
+                                st.error("❌ Failed Files:")
+                                for filename in failed_files:
+                                    st.write(f"• {filename}")
     
     # ============================================================================
     # TAB 2: CHALLAN EXTRACTOR
@@ -1017,92 +1108,134 @@ def main():
         )
         
         if uploaded_challan_files:
-            st.write(f"📁 Selected {len(uploaded_challan_files)} file(s)")
+            st.info(f"📁 Selected {len(uploaded_challan_files)} file(s) for processing")
             
-            if st.button("🔄 Process Challan PDFs", key="process_challan"):
-                extractor = ESICChallanExtractor()
-                results = []
+            if st.button("🔄 Process Challan PDFs", type="primary", key="process_challan"):
+                # Create containers
+                progress_container = st.container()
+                results_container = st.container()
+                download_container = st.container()
                 
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                for i, uploaded_file in enumerate(uploaded_challan_files):
-                    status_text.text(f"Processing {uploaded_file.name}...")
-                    progress_bar.progress((i + 1) / len(uploaded_challan_files))
+                with progress_container:
+                    st.subheader("🔄 Processing Status")
+                    extractor = ESICChallanExtractor()
+                    results = []
                     
-                    pdf_bytes = uploaded_file.read()
-                    result = extractor.process_single_pdf(pdf_bytes, uploaded_file.name)
-                    results.append(result)
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
                     
-                    if result['status'] == 'success':
-                        st.success(f"✅ Successfully processed {uploaded_file.name}")
-                    elif result['status'] == 'not_esic':
-                        st.warning(f"⚠️ {uploaded_file.name}: Not an ESIC challan document")
-                    else:
-                        st.error(f"❌ Error processing {uploaded_file.name}: {result.get('error', 'Unknown error')}")
-                
-                status_text.text("Processing completed!")
-                
-                # Display results summary
-                successful = sum(1 for r in results if r['status'] == 'success')
-                failed = len(results) - successful
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("📄 Total Files", len(results))
-                with col2:
-                    st.metric("✅ Successful", successful)
-                with col3:
-                    st.metric("❌ Failed", failed)
-                
-                # Show detailed results
-                if results:
-                    st.subheader("📋 Extraction Results")
+                    for i, uploaded_file in enumerate(uploaded_challan_files):
+                        status_text.text(f"Processing: {uploaded_file.name}")
+                        progress_bar.progress((i + 1) / len(uploaded_challan_files))
+                        
+                        pdf_bytes = uploaded_file.read()
+                        result = extractor.process_single_pdf(pdf_bytes, uploaded_file.name)
+                        results.append(result)
                     
-                    for result in results:
-                        with st.expander(f"📄 {result['filename']} - {result['status'].upper()}"):
-                            if result['status'] == 'success':
-                                data = result['extracted_data']
+                    status_text.empty()
+                    progress_bar.empty()
+                
+                # Results summary
+                with results_container:
+                    if results:
+                        st.subheader("📊 Processing Summary")
+                        
+                        # Calculate statistics
+                        successful = sum(1 for r in results if r['status'] == 'success')
+                        failed = sum(1 for r in results if r['status'] == 'error')
+                        not_esic = sum(1 for r in results if r['status'] == 'not_esic')
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("📄 Total Files", len(results))
+                        with col2:
+                            st.metric("✅ Successful", successful, delta=f"{(successful/len(results)*100):.1f}%")
+                        with col3:
+                            st.metric("❌ Failed", failed, delta=f"{(failed/len(results)*100):.1f}%" if failed > 0 else "0%")
+                        with col4:
+                            st.metric("⚠️ Not ESIC", not_esic, delta=f"{(not_esic/len(results)*100):.1f}%" if not_esic > 0 else "0%")
+                        
+                        # Status indicator
+                        if successful == len(results):
+                            st.success(f"🎉 All {len(results)} files processed successfully!")
+                        elif successful > 0:
+                            st.warning(f"⚠️ {successful} files processed successfully, {failed + not_esic} had issues")
+                        else:
+                            st.error("❌ No files were processed successfully")
+                
+                # Download and preview section
+                with download_container:
+                    if results:
+                        st.subheader("📥 Download & Preview")
+                        
+                        col1, col2 = st.columns([2, 1])
+                        
+                        with col1:
+                            # Generate Excel report
+                            try:
+                                excel_report = create_challan_excel_report(results)
                                 
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write("**Transaction Details:**")
-                                    st.write(f"• Status: {data.get('transaction_status', 'N/A')}")
-                                    st.write(f"• Transaction Number: {data.get('transaction_number', 'N/A')}")
-                                    st.write(f"• Amount Paid: {data.get('amount_paid', 'N/A')}")
+                                st.download_button(
+                                    label="📥 Download Challan Data",
+                                    data=excel_report,
+                                    file_name=f"ESIC_Challan_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    type="primary"
+                                )
                                 
-                                with col2:
-                                    st.write("**Employer Details:**")
-                                    st.write(f"• Employer Code: {data.get('employer_code', 'N/A')}")
-                                    st.write(f"• Employer Name: {data.get('employer_name', 'N/A')}")
-                                    st.write(f"• Challan Period: {data.get('challan_period', 'N/A')}")
-                                
-                                st.write("**Dates:**")
-                                st.write(f"• Created: {data.get('challan_created_date', 'N/A')}")
-                                st.write(f"• Submitted: {data.get('challan_submitted_date', 'N/A')}")
-                                
-                                if result.get('tables'):
-                                    st.write("**Tables Found:**")
-                                    for j, table in enumerate(result['tables']):
-                                        st.write(f"Table {j+1}:")
-                                        st.text('\n'.join(['\t'.join(row) for row in table[:3]]))  # Show first 3 rows
+                            except Exception as e:
+                                st.error(f"❌ Error creating Excel report: {str(e)}")
+                        
+                        with col2:
+                            st.info(f"💡 Report contains:\n• All file processing results\n• Extracted field data\n• Error details")
+                        
+                        # Quick preview of successful extractions
+                        successful_results = [r for r in results if r['status'] == 'success']
+                        if successful_results:
+                            st.subheader("📋 Quick Preview - Successfully Extracted Data")
                             
-                            else:
-                                st.error(f"Error: {result.get('error', 'Unknown error')}")
-                    
-                    # Generate Excel report
-                    try:
-                        excel_report = create_challan_excel_report(results)
+                            preview_data = []
+                            for result in successful_results[:5]:  # Show first 5 successful results
+                                data = result['extracted_data']
+                                preview_data.append({
+                                    'Filename': result['filename'][:30] + "..." if len(result['filename']) > 30 else result['filename'],
+                                    'Transaction Status': data.get('transaction_status', 'N/A')[:20],
+                                    'Employer Code': data.get('employer_code', 'N/A'),
+                                    'Amount Paid': data.get('amount_paid', 'N/A'),
+                                    'Transaction Number': data.get('transaction_number', 'N/A')[:15] + "..." if len(str(data.get('transaction_number', 'N/A'))) > 15 else data.get('transaction_number', 'N/A')
+                                })
+                            
+                            if preview_data:
+                                st.dataframe(pd.DataFrame(preview_data), use_container_width=True)
                         
-                        st.download_button(
-                            label="📥 Download Challan Report",
-                            data=excel_report,
-                            file_name=f"ESIC_Challan_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        )
-                        
-                    except Exception as e:
-                        st.error(f"❌ Error creating Excel report: {str(e)}")
+                        # Detailed results in collapsible section
+                        with st.expander("📝 View Detailed Extraction Results", expanded=False):
+                            for result in results:
+                                status_icon = "✅" if result['status'] == 'success' else "❌" if result['status'] == 'error' else "⚠️"
+                                
+                                with st.container():
+                                    st.markdown(f"**{status_icon} {result['filename']}**")
+                                    
+                                    if result['status'] == 'success':
+                                        data = result['extracted_data']
+                                        
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.write("**Transaction Details:**")
+                                            st.write(f"• Status: {data.get('transaction_status', 'N/A')}")
+                                            st.write(f"• Transaction Number: {data.get('transaction_number', 'N/A')}")
+                                            st.write(f"• Amount Paid: {data.get('amount_paid', 'N/A')}")
+                                        
+                                        with col2:
+                                            st.write("**Employer Details:**")
+                                            st.write(f"• Employer Code: {data.get('employer_code', 'N/A')}")
+                                            st.write(f"• Challan Period: {data.get('challan_period', 'N/A')}")
+                                            st.write(f"• Tables Found: {len(result.get('tables', []))}")
+                                    
+                                    else:
+                                        st.error(f"Error: {result.get('error', 'Unknown error')}")
+                                    
+                                    st.markdown("---")
 
     # ============================================================================
     # FOOTER
@@ -1111,7 +1244,7 @@ def main():
     st.markdown(
         """
         <div style='text-align: center; color: #666;'>
-        <p>🔧 ESIC PDF Data Extractor v2.0 | Developed by Akshay Raghav</p>
+        <p>🔧 ESIC PDF Data Extractor</p>
         <p>📧 For issues or feature requests, please contact the development team</p>
         </div>
         """,
