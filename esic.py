@@ -1381,8 +1381,6 @@ def main():
     # TAB 1: CONTRIBUTION HISTORY EXTRACTOR
     # ============================================================================
     with tab1:
-        st.header("ESIC ECR Extractor")
-        st.write("Upload ESIC ECR PDF files to extract employee contribution data including month information.")
         
         if not PDFPLUMBER_AVAILABLE:
             st.error("❌ pdfplumber is required for contribution history extraction. Please install it first.")
@@ -1525,8 +1523,6 @@ def main():
     # TAB 2: CHALLAN EXTRACTOR
     # ============================================================================
     with tab2:
-        st.header("ESIC Challan Extractor")
-        st.write("Upload ESIC challan PDF files.")
         
         if not PDFPLUMBER_AVAILABLE and not PYMUPDF_AVAILABLE:
             st.error("❌ Either pdfplumber or PyMuPDF is required for challan extraction.")
