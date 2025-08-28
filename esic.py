@@ -1321,7 +1321,7 @@ def main():
     # Enhanced header with professional design and proper logo placement
     try:
         from PIL import Image
-        logo = Image.open("assets/kkc logo.png")
+        logo = Image.open("kkc logo.png")
         
         st.markdown('<div class="custom-header">', unsafe_allow_html=True)
 
