@@ -70,13 +70,67 @@ def safe_numeric_convert_challan(value, is_integer=False):
     except (ValueError, TypeError):
         return value  # Return original if conversion fails
 
+def extract_month_from_text(text):
+    """Extract month name from the contribution history line"""
+    try:
+        # Look for patterns like "for Apr2024", "for Jan2024", etc.
+        month_pattern = r'for\s+([A-Za-z]{3,9}\d{4})'
+        match = re.search(month_pattern, text)
+        
+        if match:
+            period_str = match.group(1)
+            
+            # Extract month name (first 3+ letters before the year)
+            month_match = re.match(r'([A-Za-z]{3,9})', period_str)
+            if month_match:
+                month_name = month_match.group(1).capitalize()
+                
+                # Map common abbreviations to full month names
+                month_mapping = {
+                    'Jan': 'January', 'Feb': 'February', 'Mar': 'March',
+                    'Apr': 'April', 'May': 'May', 'Jun': 'June',
+                    'Jul': 'July', 'Aug': 'August', 'Sep': 'September',
+                    'Oct': 'October', 'Nov': 'November', 'Dec': 'December'
+                }
+                
+                return month_mapping.get(month_name, month_name)
+        
+        # Alternative patterns
+        patterns = [
+            r'Contribution\s+History.*?for\s+([A-Za-z]+)',
+            r'ECR\s+Of.*?for\s+([A-Za-z]+)',
+            r'Period[:\s]+([A-Za-z]+\s*\d{4})',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                month_part = match.group(1).strip()
+                # Extract just the alphabetic part
+                month_alpha = re.match(r'([A-Za-z]+)', month_part)
+                if month_alpha:
+                    month_name = month_alpha.group(1).capitalize()
+                    month_mapping = {
+                        'Jan': 'January', 'Feb': 'February', 'Mar': 'March',
+                        'Apr': 'April', 'May': 'May', 'Jun': 'June',
+                        'Jul': 'July', 'Aug': 'August', 'Sep': 'September',
+                        'Oct': 'October', 'Nov': 'November', 'Dec': 'December'
+                    }
+                    return month_mapping.get(month_name, month_name)
+        
+        return "Not Found"
+        
+    except Exception as e:
+        logger.error(f"Error extracting month: {str(e)}")
+        return "Not Found"
+
 # ============================================================================
 # ESIC CONTRIBUTION HISTORY EXTRACTOR
 # ============================================================================
 
 def extract_esic_data(pdf_file):
     """Extract ESIC ecr data from PDF while preserving structure"""
-    try:
+    try:    
         with pdfplumber.open(pdf_file) as pdf:
             extracted_data = {
                 'header_info': {},
@@ -93,14 +147,16 @@ def extract_esic_data(pdf_file):
                
                 lines = text.split('\n')
                
-                # Extract header information
+                # Extract header information including month
                 for i, line in enumerate(lines):
-                    if 'ECR Of' in line:
+                    if 'ECR Of' in line or 'Contribution History' in line:
                         # Extract establishment code and period
-                        match = re.search(r'ECR Of (\d+) for (\w+\d+)', line)
+                        match = re.search(r'(ECR Of|Contribution History.*?Of)\s+(\d+)\s+for\s+([A-Za-z]+\d+)', line)
                         if match:
-                            extracted_data['header_info']['establishment_code'] = match.group(1)
-                            extracted_data['header_info']['period'] = match.group(2)
+                            extracted_data['header_info']['establishment_code'] = match.group(2)
+                            extracted_data['header_info']['period'] = match.group(3)
+                            # Extract month name
+                            extracted_data['header_info']['month'] = extract_month_from_text(line)
                    
                     elif "Employees' State Insurance Corporation" in line:
                         extracted_data['header_info']['organization'] = line.strip()
@@ -150,7 +206,7 @@ def extract_esic_data(pdf_file):
                 
                 # Process employee rows
                 for row_text in employee_rows:
-                    employee_record = parse_employee_row_improved(row_text, extracted_data['summary_info'])
+                    employee_record = parse_employee_row_improved(row_text, extracted_data['summary_info'], extracted_data['header_info'])
                     if employee_record:
                         extracted_data['employee_data'].append(employee_record)
 
@@ -172,7 +228,7 @@ def extract_esic_data(pdf_file):
         return None
 
 
-def parse_employee_row_improved(row_text, summary_info):
+def parse_employee_row_improved(row_text, summary_info, header_info):
     """Parse individual employee row with improved logic for handling names and data"""
     try:
         row_text = row_text.strip()
@@ -292,6 +348,8 @@ def parse_employee_row_improved(row_text, summary_info):
             'Total Wages': safe_numeric_convert(wages),
             'IP Contribution': safe_numeric_convert(contribution),
             'Reason': reason,
+            # Add month from header info
+            'Month': header_info.get('month', 'Not Found'),
             # Add summary columns - convert to numbers
             'Total IP Contribution': safe_numeric_convert(summary_info.get('total_ip_contribution', '')),
             'Total Employer Contribution': safe_numeric_convert(summary_info.get('total_employer_contribution', '')),
@@ -328,14 +386,22 @@ def format_excel_sheet(worksheet, data, start_row=1):
         title = f"ECR Of {data['header_info'].get('establishment_code', '')} for {data['header_info'].get('period', '')}"
         worksheet.cell(row=current_row, column=1, value=title)
         worksheet.cell(row=current_row, column=1).font = Font(name='Arial', size=14, bold=True)
-        worksheet.merge_cells(f'A{current_row}:H{current_row}')
+        worksheet.merge_cells(f'A{current_row}:I{current_row}')  # Updated to include month column
         current_row += 1
        
         org_name = data['header_info'].get('organization', '')
         if org_name:
             worksheet.cell(row=current_row, column=1, value=org_name)
             worksheet.cell(row=current_row, column=1).font = header_font
-            worksheet.merge_cells(f'A{current_row}:H{current_row}')
+            worksheet.merge_cells(f'A{current_row}:I{current_row}')  # Updated to include month column
+            current_row += 1
+        
+        # Add month information
+        month_info = data['header_info'].get('month', '')
+        if month_info and month_info != 'Not Found':
+            worksheet.cell(row=current_row, column=1, value=f"Month: {month_info}")
+            worksheet.cell(row=current_row, column=1).font = header_font
+            worksheet.merge_cells(f'A{current_row}:I{current_row}')
             current_row += 1
    
     current_row += 1  # Add space
@@ -419,8 +485,8 @@ def create_combined_excel(all_data):
                 all_employee_data.append(employee_copy)
     
     if all_employee_data:
-        # Create combined data table
-        headers = ['Source_File', 'SNo.', 'Is Disable', 'IP Number', 'IP Name', 'No. Of Days', 'Total Wages', 'IP Contribution', 'Reason']
+        # Create combined data table - Updated headers to include month
+        headers = ['Source_File', 'Month', 'SNo.', 'Is Disable', 'IP Number', 'IP Name', 'No. Of Days', 'Total Wages', 'IP Contribution', 'Reason']
         
         # Write headers
         for col, header in enumerate(headers, 1):
@@ -458,7 +524,8 @@ def create_combined_excel(all_data):
         
         # Add employee data table
         if 'employee_data' in data and data['employee_data']:
-            headers = ['SNo.', 'Is Disable', 'IP Number', 'IP Name', 'No. Of Days', 'Total Wages', 'IP Contribution', 'Reason']
+            # Updated headers to include month
+            headers = ['Month', 'SNo.', 'Is Disable', 'IP Number', 'IP Name', 'No. Of Days', 'Total Wages', 'IP Contribution', 'Reason']
            
             # Write headers
             for col, header in enumerate(headers, 1):
@@ -919,6 +986,21 @@ def create_challan_excel_report(results):
     output.seek(0)
     return output
 
+def create_enhanced_upload_section(title, description, key, file_type="pdf"):
+    st.markdown(f"""
+    <div class="upload-card animate-fadeInUp">
+        <h3 style="color: #1e293b; font-family: 'Inter', sans-serif; font-weight: 600; margin-bottom: 1rem;">{title}</h3>
+        <p style="color: #64748b; font-family: 'Inter', sans-serif; margin-bottom: 1.5rem;">{description}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    return st.file_uploader(
+        f"Choose {file_type.upper()} files",
+        type=file_type,
+        accept_multiple_files=True,
+        key=key,
+        label_visibility="collapsed"
+    )
 
 # ============================================================================
 # STREAMLIT APPLICATION
@@ -928,12 +1010,358 @@ def main():
     st.set_page_config(
         page_title="ESIC PDF Data Extractor",
         page_icon="📄",
-        layout="wide"
+        layout="wide",
+        initial_sidebar_state="collapsed"
     )
     
-    st.title("🏢 ESIC PDF Data Extractor")
-    st.markdown("---")
+    # Enhanced Custom CSS for professional appearance
+    st.markdown("""
+    <style>
+    /* Import Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     
+    /* Main container styling */
+    .main > div {
+        padding: 1rem 2rem;
+    }
+    
+    /* Custom header styling */
+    .custom-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 2rem;
+        border-radius: 20px;
+        margin-bottom: 2rem;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        position: relative;
+        overflow: hidden;
+    }
+    
+    .custom-header::before {
+        content: '';
+        position: absolute;
+        top: -50%;
+        right: -50%;
+        width: 200%;
+        height: 200%;
+        background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 70%);
+        animation: shimmer 3s ease-in-out infinite;
+    }
+    
+    @keyframes shimmer {
+        0%, 100% { transform: translateX(-100%) translateY(-100%) rotate(45deg); }
+        50% { transform: translateX(-50%) translateY(-50%) rotate(45deg); }
+    }
+    
+    .header-content {
+    display: flex;
+    align-items: center;
+    position: relative;
+    z-index: 2;
+    min-height: 200px; /* Add minimum height to accommodate larger logo */
+    }
+
+    .logo-section img {
+    border-radius: 15px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    transition: transform 0.3s ease;
+    max-width: 100%; /* Ensure responsiveness */
+    height: auto;
+    }
+
+/* Add responsive adjustments */
+@media (max-width: 768px) {
+    .logo-section img {
+        width: 300px !important; /* Smaller on mobile */
+    }
+}
+    
+    .logo-section img {
+        border-radius: 15px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        transition: transform 0.3s ease;
+    }
+    
+    .logo-section img:hover {
+        transform: scale(1.05);
+    }
+    
+    .title-section {
+        flex-grow: 1;
+    }
+    
+    .main-title {
+        color: white !important;
+        font-family: 'Inter', sans-serif !important;
+        font-weight: 700 !important;
+        font-size: 3rem !important;
+        margin: 0 !important;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        letter-spacing: -0.02em;
+    }
+    
+    .subtitle {
+        color: rgba(255,255,255,0.9) !important;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 1.2rem !important;
+        margin: 0.5rem 0 0 0 !important;
+        font-weight: 300 !important;
+    }
+    
+    /* Enhanced tabs styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+        background-color: #f8fafc;
+        padding: 0.5rem;
+        border-radius: 15px;
+        border: none;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 60px;
+        white-space: pre-wrap;
+        background-color: transparent;
+        border-radius: 10px;
+        color: #64748b;
+        font-weight: 500;
+        font-family: 'Inter', sans-serif;
+        border: none;
+        padding: 0 2rem;
+        transition: all 0.3s ease;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+        color: white !important;
+        box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    }
+    
+    .stTabs [data-baseweb="tab"]:hover {
+        background-color: rgba(59, 130, 246, 0.1);
+        transform: translateY(-2px);
+    }
+    
+    /* Enhanced cards and containers */
+    .upload-card {
+        background: white;
+        padding: 2rem;
+        border-radius: 20px;
+        box-shadow: 0 5px 25px rgba(0,0,0,0.08);
+        border: 1px solid #e2e8f0;
+        margin: 1rem 0;
+        transition: all 0.3s ease;
+    }
+    
+    .upload-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 35px rgba(0,0,0,0.15);
+    }
+    
+    .stats-card {
+        background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+        padding: 1.5rem;
+        border-radius: 15px;
+        border: 1px solid #cbd5e1;
+        margin: 0.5rem 0;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    
+    .stats-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+    }
+    
+    /* Enhanced buttons */
+    .stButton > button {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
+        border: none;
+        padding: 0.75rem 2rem;
+        border-radius: 12px;
+        font-weight: 600;
+        font-family: 'Inter', sans-serif;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4);
+        background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    }
+    
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+        box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    }
+    
+    .stButton > button[kind="primary"]:hover {
+        background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+        box-shadow: 0 8px 25px rgba(59, 130, 246, 0.4);
+    }
+    
+    /* Enhanced metrics */
+    [data-testid="metric-container"] {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 15px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        transition: all 0.3s ease;
+    }
+    
+    [data-testid="metric-container"]:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+    }
+    
+    [data-testid="metric-container"] [data-testid="metric-container-label"] {
+        font-family: 'Inter', sans-serif;
+        font-weight: 500;
+        color: #64748b;
+    }
+    
+    [data-testid="metric-container"] [data-testid="metric-container-value"] {
+        font-family: 'Inter', sans-serif;
+        font-weight: 700;
+        font-size: 2rem;
+        color: #1e293b;
+    }
+    
+    /* Enhanced file uploader */
+    .stFileUploader > div {
+        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+        border: 2px dashed #cbd5e1;
+        border-radius: 20px;
+        padding: 3rem;
+        text-align: center;
+        transition: all 0.3s ease;
+    }
+    
+    .stFileUploader > div:hover {
+        border-color: #3b82f6;
+        background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+        transform: translateY(-2px);
+    }
+    
+    /* Enhanced dataframes */
+    .stDataFrame {
+        border-radius: 15px;
+        overflow: hidden;
+        box-shadow: 0 5px 25px rgba(0,0,0,0.08);
+    }
+    
+    /* Progress bars */
+    .stProgress .st-bo {
+        background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+        border-radius: 10px;
+    }
+    
+    /* Enhanced expanders */
+    .streamlit-expanderHeader {
+        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
+        border-radius: 15px;
+        font-family: 'Inter', sans-serif;
+        font-weight: 600;
+    }
+    
+    /* Footer enhancement */
+    .footer-enhanced {
+        background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+        color: white;
+        padding: 2rem;
+        border-radius: 20px;
+        margin-top: 3rem;
+        text-align: center;
+        box-shadow: 0 5px 25px rgba(0,0,0,0.1);
+    }
+    
+    .footer-enhanced p {
+        margin: 0.5rem 0;
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Animations */
+    @keyframes fadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(30px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    
+    .animate-fadeInUp {
+        animation: fadeInUp 0.6s ease-out;
+    }
+    
+    /* Responsive design */
+    @media (max-width: 768px) {
+        .header-content {
+            flex-direction: column;
+            text-align: center;
+        }
+        
+        .logo-section {
+            margin-right: 0;
+            margin-bottom: 1rem;
+        }
+        
+        .main-title {
+            font-size: 2rem !important;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Enhanced header with professional design
+    # Enhanced header with professional design and proper logo placement
+    try:
+        from PIL import Image
+        logo = Image.open("assets/kkc logo.png")
+        
+        st.markdown('<div class="custom-header">', unsafe_allow_html=True)
+
+        # Create columns for logo and title
+        col_logo, col_title = st.columns([3, 7])
+        
+        with col_logo:
+            st.image(logo, width=700)  # Set to 750px width as requested
+        
+        with col_title:
+            st.markdown("""
+                <div style="padding-left: 2rem; display: flex; flex-direction: column; justify-content: center; height: 150px;">
+                    <h1 style="color: black; font-family: 'Inter', sans-serif; font-weight: 700; font-size: 2.5rem; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+                        ESIC PDF Data Extractor
+                    </h1>
+                    <p style="color: rgba(255,255,255,0.9); font-family: 'Inter', sans-serif; font-size: 1.1rem; margin: 0.5rem 0 0 0; font-weight: 300;">
+                        Professional • Efficient • Reliable Data Processing
+                    </p>
+                </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    except Exception as e:
+        # Fallback header without logo
+        st.markdown("""
+        <div class="custom-header">
+            <div style="text-align: center; padding: 2rem;">
+                <h1 style="color: white; font-family: 'Inter', sans-serif; font-weight: 700; font-size: 3rem; margin: 0; text-shadow: 2px 2px 4px rgba(0,0,0,0.3);">
+                    ESIC PDF Data Extractor
+                </h1>
+                <p style="color: rgba(255,255,255,0.9); font-family: 'Inter', sans-serif; font-size: 1.2rem; margin: 0.5rem 0 0 0; font-weight: 300;">
+                    Professional • Efficient • Reliable Data Processing
+                </p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.warning(f"Logo not loaded: {str(e)}")
+    
+    # Rest of your existing code continues here...    
     # Check for required libraries
     missing_libraries = []
     if not PDFPLUMBER_AVAILABLE:
@@ -954,18 +1382,17 @@ def main():
     # ============================================================================
     with tab1:
         st.header("ESIC ECR Extractor")
-        st.write("Upload ESIC ECR PDF files.")
+        st.write("Upload ESIC ECR PDF files to extract employee contribution data including month information.")
         
         if not PDFPLUMBER_AVAILABLE:
             st.error("❌ pdfplumber is required for contribution history extraction. Please install it first.")
             st.code("pip install pdfplumber")
             return
         
-        uploaded_files = st.file_uploader(
-            "Choose ESIC ECR PDF files",
-            type="pdf",
-            accept_multiple_files=True,
-            key="contribution_files"
+        uploaded_files = create_enhanced_upload_section(
+            "ESIC ECR File Upload", 
+            "Upload ESIC ECR PDF files to extract employee contribution data including month information.",
+            "contribution_files"
         )
         
         if uploaded_files:
@@ -1063,14 +1490,14 @@ def main():
                                 st.error(f"❌ Error creating Excel file: {str(e)}")
                         
                         with col2:
-                            st.info(f"💡 Excel contains:\n• Combined data sheet\n• Individual file sheets\n• {total_employees} employee records")
+                            st.info(f"💡 Excel contains:\n• Combined data sheet with month info\n• Individual file sheets\n• {total_employees} employee records")
                         
                         # Data preview
                         if all_data[0]['data'].get('employee_data'):
                             st.subheader("📋 Data Preview (First 10 rows)")
                             preview_df = pd.DataFrame(all_data[0]['data']['employee_data'][:10])
-                            # Show only key columns for preview
-                            key_columns = ['SNo.', 'IP Number', 'IP Name', 'No. Of Days', 'Total Wages', 'IP Contribution']
+                            # Show only key columns for preview including month
+                            key_columns = ['Month', 'SNo.', 'IP Number', 'IP Name', 'No. Of Days', 'Total Wages', 'IP Contribution']
                             available_columns = [col for col in key_columns if col in preview_df.columns]
                             if available_columns:
                                 st.dataframe(preview_df[available_columns], use_container_width=True)
@@ -1081,7 +1508,13 @@ def main():
                             if successful_files:
                                 st.success("✅ Successfully Processed Files:")
                                 for filename in successful_files:
-                                    st.write(f"• {filename}")
+                                    # Show extracted month if available
+                                    file_data = next((item for item in all_data if item['filename'] == filename), None)
+                                    if file_data and 'header_info' in file_data['data']:
+                                        month = file_data['data']['header_info'].get('month', 'Unknown')
+                                        st.write(f"• {filename} (Month: {month})")
+                                    else:
+                                        st.write(f"• {filename}")
                             
                             if failed_files:
                                 st.error("❌ Failed Files:")
@@ -1100,11 +1533,10 @@ def main():
             st.code("pip install pdfplumber PyMuPDF")
             return
         
-        uploaded_challan_files = st.file_uploader(
-            "Choose ESIC challan PDF files",
-            type="pdf",
-            accept_multiple_files=True,
-            key="challan_files"
+        uploaded_challan_files = create_enhanced_upload_section(
+            "ESIC Challan File Upload", 
+            "Upload ESIC challan PDF files for transaction and payment data extraction.",
+            "challan_files"
         )
         
         if uploaded_challan_files:
@@ -1240,16 +1672,15 @@ def main():
     # ============================================================================
     # FOOTER
     # ============================================================================
-    st.markdown("---")
-    st.markdown(
-        """
-        <div style='text-align: center; color: #666;'>
-        <p>🔧 ESIC PDF Data Extractor</p>
-        <p>📧 For issues or feature requests, please contact the development team</p>
+    st.markdown("""
+    <div class="footer-enhanced">
+        <h3 style="margin-bottom: 1rem; font-weight: 600;">🔧 ESIC PDF Data Extractor</h3>
+        <p style="color: rgba(255,255,255,0.8);">📧 For issues or feature requests, please contact the development team</p>
+        <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.2);">
+            <p style="font-size: 0.9rem; color: rgba(255,255,255,0.6);">🔄 Refresh to restart from the beginning</p>
         </div>
-        """,
-        unsafe_allow_html=True
-    )
+    </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
