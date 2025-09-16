@@ -1,4 +1,4 @@
 pdfplumber
-PyMuPDF 
-openpyxl
+PyMuPDF
 xlsxwriter
+openpyxl
